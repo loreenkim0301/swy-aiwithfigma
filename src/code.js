@@ -72,7 +72,7 @@ const STYLE_MAP = {};
 let _notifyHandle = null;
 function progress(msg) {
   if (_notifyHandle) { try { _notifyHandle.cancel(); } catch (_) {} }
-  _notifyHandle = figma.notify(msg, { timeout: Infinity });
+  try { _notifyHandle = figma.notify(msg, { timeout: 60000 }); } catch(_) {}
 }
 function yield_() { return new Promise(r => setTimeout(r, 80)); }
 
@@ -109,18 +109,30 @@ async function registerAllStyles() {
     if (found) { STYLE_MAP[token.name] = { id: found.id, token }; continue; }
     const style = figma.createEffectStyle();
     style.name    = token.name;
-    style.effects = JSON.parse(JSON.stringify(token.effects));
+    style.effects = token.effects.map(function(e) {
+      return { type: e.type, color: { r: e.color.r, g: e.color.g, b: e.color.b, a: e.color.a },
+               offset: { x: e.offset.x, y: e.offset.y }, radius: e.radius,
+               spread: e.spread, visible: e.visible, blendMode: e.blendMode };
+    });
     STYLE_MAP[token.name] = { id: style.id, token };
   }
 
-  const existingGrids = figma.getLocalGridStyles();
-  for (const token of GRID_TOKENS) {
-    const found = existingGrids.find(s => s.name === token.name);
-    if (found) { STYLE_MAP[token.name] = { id: found.id, token }; continue; }
-    const style = figma.createGridStyle();
-    style.name  = token.name;
-    style.grids = JSON.parse(JSON.stringify(token.grids));
-    STYLE_MAP[token.name] = { id: style.id, token };
+  try {
+    const existingGrids = figma.getLocalGridStyles();
+    for (const token of GRID_TOKENS) {
+      const found = existingGrids.find(s => s.name === token.name);
+      if (found) { STYLE_MAP[token.name] = { id: found.id, token }; continue; }
+      const style = figma.createGridStyle();
+      style.name  = token.name;
+      style.grids = token.grids.map(function(g) {
+        return { pattern: g.pattern, alignment: g.alignment, gutterSize: g.gutterSize,
+                 count: g.count, offset: g.offset, sectionSize: g.sectionSize };
+      });
+      STYLE_MAP[token.name] = { id: style.id, token };
+    }
+  } catch(e) {
+    // Grid styles 실패는 무시 (레이아웃 생성에 필수 아님)
+    console.warn("Grid style 생성 실패:", e.message);
   }
 }
 
@@ -973,6 +985,7 @@ function applyStylesToNode(node) {
       progress("Auto Layout 구조 검증 중 (4/4) \u2014 Sidebar, Widgets, Form...");
       await yield_();
 
+      if (_notifyHandle) { try { _notifyHandle.cancel(); } catch (_) {} }
       figma.viewport.scrollAndZoomIntoView([pc, mb]);
       figma.closePlugin(
         "완료! 스타일 " + totalStyles + "개 + Auto Layout 전면 적용 완료 (PC / Mobile)"
