@@ -4,6 +4,31 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [v2.2.0] - 2026-03-27
+
+### Added
+- `mkAutoComponent` helper: ComponentNode 생성 전용 (mkAutoFrame과 동일 인터페이스)
+- `COMPONENTS` 레지스트리: 생성된 마스터 컴포넌트를 키로 참조
+- 마스터 컴포넌트 10개 자동 생성 (`buildAllComponents()`)
+  - Tag / Default, Badge / Count
+  - Button / Pill — Active, Button / Pill — Inactive
+  - Category / Item (Badge 인스턴스 내장)
+  - Post Card / Regular, Post Card / Featured
+  - Nav Link / Active, Nav Link / Default
+  - Sidebar Widget (Content slot 포함)
+- 전용 페이지 🧩 Components에 마스터 컴포넌트 자동 배치
+
+### Changed
+- V2.2 디자인 페이지의 모든 반복 요소를 인스턴스로 교체
+  - Filter Tabs, Header Nav, Category Items, Tags, Sidebar 위젯 3개, Post Cards
+- `buildPC(page)` / `buildMobile(page)`: `figma.currentPage` 의존 제거, page 명시적 인자로 전달
+
+### Fixed
+- `buildAllComponents()` finally 블록: 에러 시에도 `figma.currentPage` 복원 보장
+- 다른 페이지에 누수된 orphan ComponentNode 자동 제거
+
+---
+
 ## [v2.1.0] - 2026-03-26
 
 ### Added
