@@ -93,18 +93,18 @@ V3.x는 동일한 결과를 MCP + AI로 대체할 수 있는지 검증하는 트
 
 ---
 
-### V2.3 — Variants 적용 (예정)
+### V2.3 — Variants (후순위 보류)
 
-**디자이너 페인포인트**
-> "버튼이 기본 상태만 있고 hover, active 상태가 없다.
-> 프로토타이핑을 하려면 상태별 프레임을 수동으로 다시 만들어야 한다."
+**Variants가 필요한 상황**
+- 디자이너가 Figma 프로토타입에서 버튼 클릭 → 상태 전환 인터랙션을 직접 연결할 때
+- 팀 전체가 공유하는 디자인 시스템 라이브러리를 구축할 때
 
-**해결할 것**
-- Button / Pill, Nav Link, Post Card를 Component Set(Variants)으로 변환
-- 상태별(Default / Active / Hover) 자동 생성
-- Figma 프로토타이핑에서 상태 전환 바로 연결 가능
-
-**예정 버전**: V2.3
+**보류 이유**
+개발자 핸드오프 관점에서 Variants는 필수가 아니다.
+`Button / Pill — Active`와 `Button / Pill — Inactive`가 별도 컴포넌트로 존재해도
+개발자는 두 컴포넌트를 나란히 비교해 fill color, text style 차이를 정확히 읽을 수 있다.
+이 프로젝트의 1차 목적은 핸드오프 자동화이며, V2.2에서 그 목적은 완성됐다.
+Variants는 디자인 시스템 라이브러리 완성도의 영역으로, 필요 시 별도로 추진한다.
 
 ---
 
