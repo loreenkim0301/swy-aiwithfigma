@@ -1,6 +1,6 @@
 {
-  "name": "figma-aiwithfigma",
-  "id": "figma-aiwithfigma",
+  "name": "swy-aiwithfigma",
+  "id": "swy-aiwithfigma",
   "api": "1.0.0",
   "main": "src/code.js",
   "editorType": ["figma"]
