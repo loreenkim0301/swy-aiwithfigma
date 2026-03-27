@@ -59,31 +59,50 @@ V3.x는 동일한 결과를 MCP + AI로 대체할 수 있는지 검증하는 트
 
 ---
 
-### V2.2 — Auto Layout 분석 및 프레임 전면 적용 (예정)
-
-**디자이너 페인포인트**
-> "프레임이 절대좌표로 박혀있어서 반응형 구조를 Figma에서 확인할 수 없다.
-> 개발자가 padding, gap 값을 직접 측정해야 한다."
-
-**해결할 것**
-- CSS `display: flex / grid`에 해당하는 모든 레이아웃 컨테이너에 Auto Layout 자동 적용
-- Header, Hero, Card, Sidebar, Footer 등 14개 레이아웃 존 커버
-- 인스펙터에서 `padding: 20px`, `gap: 16px` 직접 확인 가능
-
-**예정 버전**: V2.2
-
----
-
-### V2.3 — 컴포넌트 생성 및 Assets 패널 등록 (예정)
+### V2.2 — 컴포넌트 생성 및 Assets 패널 등록 ✅
 
 **디자이너 페인포인트**
 > "Post Card가 5개 있는데 각각 개별 프레임이다.
-> 하나를 수정하면 나머지를 수동으로 다 바꿔야 한다."
+> 하나를 수정하면 나머지를 수동으로 다 바꿔야 한다.
+> Assets 패널이 텅 비어 있어서 디자인 시스템처럼 쓸 수 없다."
+
+**해결한 것**
+- `figma.createComponent()`로 반복 요소 10개를 마스터 컴포넌트로 자동 생성
+- 전용 페이지 🧩 Components에 모든 마스터 컴포넌트 정렬
+- V2.2 디자인 페이지의 모든 반복 요소는 인스턴스(instance)로 배치
+- Assets 패널에서 드래그·드롭 재사용 가능
+
+**생성되는 컴포넌트 10개**
+
+| 컴포넌트 | 사용처 |
+|---|---|
+| Tag / Default | Sidebar Tags |
+| Badge / Count | Category Item 내부 |
+| Button / Pill — Active | Filter Tabs 활성 |
+| Button / Pill — Inactive | Filter Tabs 비활성 |
+| Category / Item | Sidebar Categories |
+| Post Card / Regular | Posts Grid |
+| Post Card / Featured | 상단 Featured 영역 |
+| Nav Link / Active | Header "홈" |
+| Nav Link / Default | Header "카테고리", "소개" |
+| Sidebar Widget | Categories, Tags, Newsletter 외관 |
+
+**결과물**
+- 🧩 Components 페이지: 마스터 컴포넌트 10개
+- V2.2 페이지: PC 1440px + Mobile 375px (모든 반복 요소가 인스턴스)
+
+---
+
+### V2.3 — Variants 적용 (예정)
+
+**디자이너 페인포인트**
+> "버튼이 기본 상태만 있고 hover, active 상태가 없다.
+> 프로토타이핑을 하려면 상태별 프레임을 수동으로 다시 만들어야 한다."
 
 **해결할 것**
-- 반복 요소(Post Card, Button, Badge, Tag, Category Item)를 Figma 컴포넌트로 자동 변환
-- Assets 패널에서 드래그·드롭으로 재사용 가능
-- Variants 적용 (기본 / 활성 / 호버 상태)
+- Button / Pill, Nav Link, Post Card를 Component Set(Variants)으로 변환
+- 상태별(Default / Active / Hover) 자동 생성
+- Figma 프로토타이핑에서 상태 전환 바로 연결 가능
 
 **예정 버전**: V2.3
 
@@ -195,6 +214,45 @@ claude mcp add --transport http figma https://mcp.figma.com/mcp
 1. Claude Desktop 또는 Claude Code 실행
 2. `/mcp` 명령어로 Figma MCP 인증 (OAuth)
 3. Claude에게 원하는 디자인 요청
+
+---
+
+## 레포지토리 구조 — OSS vs Commercial
+
+이 프로젝트는 두 트랙으로 관리됩니다.
+
+```
+blog-figma-plugin          ← 이 레포 (Public, MIT)
+blog-figma-plugin-pro      ← 별도 Private 레포 (Commercial)
+```
+
+### OSS 버전 (이 레포)
+
+- **대상**: 로컬에서 직접 테스트하고 싶은 디자이너·개발자
+- **방식**: headless 플러그인 — 실행 즉시 프레임 생성, 완료 후 자동 닫힘
+- **라이선스**: MIT — 자유롭게 수정·배포 가능
+- UI 없음, `figma.notify()`로 진행 상황 표시
+
+### Commercial 버전 (Private)
+
+- **대상**: 팀 단위 사용, 결과 리포트 확인이 필요한 워크플로우
+- **추가 기능**: Plugin UI 패널 — 생성 완료 후 컴포넌트·스타일·페이지 구조 리포트 표시
+- OSS 코어(`src/code.js`)를 그대로 사용, `src/ui.html`만 추가
+
+```
+OSS 레포                     Commercial 레포
+src/code.js ──────────────▶  src/code.js  (동일 코어)
+manifest.json                src/ui.html  (추가)
+                             manifest.json (ui 필드 추가)
+```
+
+**OSS에서 Commercial로 코어 업데이트하는 방법**
+```bash
+# Commercial 레포에서
+git remote add oss https://github.com/your-repo/blog-figma-plugin.git
+git fetch oss
+git checkout oss/main -- src/code.js   # 코어만 가져오기
+```
 
 ---
 

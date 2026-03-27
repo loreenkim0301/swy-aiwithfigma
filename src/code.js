@@ -1,12 +1,17 @@
 // ─────────────────────────────────────────────
 // Blog Prototype Figma Plugin
-// Version : 2.1  (Bottom-Up Auto Layout)
+// Version : 2.2  (Component Generation)
 //
-// V2.1 전략: 상향식(leaf → root) 구성
-//   텍스트 → Card Body → Card → Grid → Column → Page
-//   AL은 빌드 시점에 적용 — 사후 후처리 없음
+// V2.2 전략: 반복 요소를 Figma 컴포넌트로 자동 생성
+//   마스터 컴포넌트 → 🧩 Components 전용 페이지에 등록
+//   디자인 페이지   → createInstance() + 텍스트 오버라이드
+//
+// 컴포넌트 대상:
+//   Post Card / Regular, Post Card / Featured
+//   Button / Pill (Active, Inactive)
+//   Tag / Default, Badge / Count, Category / Item
 // ─────────────────────────────────────────────
-const PLUGIN_VERSION = "2.1";
+const PLUGIN_VERSION = "2.2";
 
 // ── Design Tokens ────────────────────────────
 
@@ -66,6 +71,10 @@ const GRID_TOKENS = [
 // ── Style Registry ───────────────────────────
 
 const STYLE_MAP = {};
+
+// ── Component Registry ────────────────────────
+
+const COMPONENTS = {};
 
 // ── Progress Reporter ─────────────────────────
 
@@ -294,6 +303,68 @@ function mkAutoFrame(parent, name, direction, opts) {
   return f;
 }
 
+// mkAutoComponent: mkAutoFrame와 동일하지만 ComponentNode를 생성한다.
+// 마스터 컴포넌트 빌드 전용. parent는 항상 null로 호출 후 컴포넌트 페이지에 배치.
+function mkAutoComponent(name, direction, opts) {
+  var o = opts || {};
+  var f = figma.createComponent();
+  f.name = name;
+  f.clipsContent = false;
+
+  if (o.fillStyle) applyFillStyle(f, o.fillStyle);
+  else if (o.fill) f.fills = solidFill(C[o.fill]);
+  else f.fills = [];
+
+  if (o.radius !== undefined) f.cornerRadius = o.radius;
+  if (o.stroke) {
+    f.strokes = solidFill(C[o.stroke]);
+    f.strokeWeight = 1;
+    f.strokeAlign = "INSIDE";
+  }
+
+  f.layoutMode = direction;
+
+  var pad = o.pad !== undefined ? o.pad : 0;
+  var padH = o.padH !== undefined ? o.padH : pad;
+  var padV = o.padV !== undefined ? o.padV : pad;
+  f.paddingLeft   = o.padLeft  !== undefined ? o.padLeft  : padH;
+  f.paddingRight  = o.padRight !== undefined ? o.padRight : padH;
+  f.paddingTop    = o.padTop   !== undefined ? o.padTop   : padV;
+  f.paddingBottom = o.padBot   !== undefined ? o.padBot   : padV;
+
+  if (o.gap !== undefined) f.itemSpacing = o.gap;
+  if (o.wrap) {
+    f.layoutWrap = "WRAP";
+    if (o.rowGap !== undefined) f.counterAxisSpacing = o.rowGap;
+  }
+
+  f.primaryAxisAlignItems = o.spaceBetween ? "SPACE_BETWEEN" : (o.centerMain ? "CENTER" : "MIN");
+  f.counterAxisAlignItems = o.centerCross ? "CENTER" : "MIN";
+
+  var isH = direction === "HORIZONTAL";
+  var hasW = o.w !== undefined;
+  var hasH = o.h !== undefined;
+
+  if (hasW && hasH) {
+    f.resize(o.w, o.h);
+    f.primaryAxisSizingMode = "FIXED";
+    f.counterAxisSizingMode = "FIXED";
+  } else if (hasW) {
+    f.resize(o.w, f.height);
+    if (isH) { f.primaryAxisSizingMode = "FIXED"; f.counterAxisSizingMode = "AUTO"; }
+    else      { f.counterAxisSizingMode = "FIXED"; f.primaryAxisSizingMode = "AUTO"; }
+  } else if (hasH) {
+    f.resize(f.width, o.h);
+    if (isH) { f.counterAxisSizingMode = "FIXED"; f.primaryAxisSizingMode = "AUTO"; }
+    else      { f.primaryAxisSizingMode = "FIXED"; f.counterAxisSizingMode = "AUTO"; }
+  } else {
+    f.primaryAxisSizingMode = "AUTO";
+    f.counterAxisSizingMode = "AUTO";
+  }
+
+  return f;
+}
+
 // mkFlexText: creates text node for use inside an AL container (no x,y)
 //   opts.textStyle  — text style name
 //   opts.fillStyle  — paint style name
@@ -371,94 +442,243 @@ function getOrMakePage(name) {
 }
 
 // ─────────────────────────────────────────────
+// Component Builders
+// ─────────────────────────────────────────────
+
+function buildAllComponents() {
+  var compPageName = "🧩 Components";
+  var compPage = figma.root.children.find(function(p) { return p.name === compPageName; });
+  if (!compPage) { compPage = figma.createPage(); compPage.name = compPageName; }
+
+  // 다른 페이지에 잘못 만들어진 동명 컴포넌트 노드 제거
+  figma.root.children.forEach(function(page) {
+    if (page.id === compPage.id) return;
+    var orphans = page.children.filter(function(n) {
+      return n.type === "COMPONENT" && (
+        n.name === "Post Card / Regular" || n.name === "Post Card / Featured" ||
+        n.name === "Card Body" || n.name === "Tag / Default" ||
+        n.name === "Badge / Count" || n.name === "Button / Pill \u2014 Active" ||
+        n.name === "Button / Pill \u2014 Inactive" || n.name === "Category / Item" ||
+        n.name === "Nav Link / Active" || n.name === "Nav Link / Default" ||
+        n.name === "Sidebar Widget"
+      );
+    });
+    orphans.forEach(function(n) { n.remove(); });
+  });
+
+  var savedPage = figma.currentPage;
+  figma.currentPage = compPage;
+  try {
+  [...compPage.children].forEach(function(n) { n.remove(); });
+
+  var xCursor = 0;
+  function place(comp) {
+    compPage.appendChild(comp);
+    comp.x = xCursor;
+    comp.y = 0;
+    xCursor += comp.width + 48;
+    return comp;
+  }
+
+  // ── 1. Tag / Default ─────────────────────────────────
+  var tagComp = mkAutoComponent("Tag / Default", "HORIZONTAL", {
+    fillStyle: "Background/Primary", radius: 20, stroke: "border",
+    padLeft: 12, padRight: 12, padTop: 5, padBot: 5,
+  });
+  mkFlexText(tagComp, "태그", "muted", { textStyle: "Label/Tag", fillStyle: "Text/Muted" });
+  place(tagComp);
+  COMPONENTS.tag = tagComp;
+
+  // ── 2. Badge / Count ─────────────────────────────────
+  var badgeComp = mkAutoComponent("Badge / Count", "HORIZONTAL", {
+    fillStyle: "Background/Primary", radius: 9,
+    padLeft: 6, padRight: 6, centerMain: true, centerCross: true,
+  });
+  mkFlexText(badgeComp, "0", "muted", { textStyle: "Label/Meta", fillStyle: "Text/Muted" });
+  place(badgeComp);
+  COMPONENTS.badge = badgeComp;
+
+  // ── 3. Button / Pill — Active ─────────────────────────
+  var btnActive = mkAutoComponent("Button / Pill — Active", "HORIZONTAL", {
+    fillStyle: "Accent/Primary", radius: 20,
+    padLeft: 14, padRight: 14, padTop: 6, padBot: 6,
+    centerMain: true, centerCross: true,
+  });
+  mkFlexText(btnActive, "전체", "white", { textStyle: "Label/Filter-Active", fillStyle: "Accent/White" });
+  place(btnActive);
+  COMPONENTS.btnActive = btnActive;
+
+  // ── 4. Button / Pill — Inactive ───────────────────────
+  var btnInactive = mkAutoComponent("Button / Pill — Inactive", "HORIZONTAL", {
+    fillStyle: "Background/Surface", radius: 20, stroke: "border",
+    padLeft: 14, padRight: 14, padTop: 6, padBot: 6,
+    centerMain: true, centerCross: true,
+  });
+  mkFlexText(btnInactive, "카테고리", "muted", { textStyle: "Label/Filter", fillStyle: "Text/Muted" });
+  place(btnInactive);
+  COMPONENTS.btnInactive = btnInactive;
+
+  // ── 5. Category / Item ────────────────────────────────
+  var catComp = mkAutoComponent("Category / Item", "HORIZONTAL", {
+    padLeft: 12, padRight: 12, spaceBetween: true, centerCross: true, h: 32,
+  });
+  mkFlexText(catComp, "카테고리", "muted",
+    { textStyle: "Body/Regular", fillStyle: "Text/Muted", hFill: true });
+  var badgeInst = COMPONENTS.badge.createInstance();
+  catComp.appendChild(badgeInst);
+  place(catComp);
+  COMPONENTS.catItem = catComp;
+
+  // ── 6. Post Card / Regular ───────────────────────────
+  var CW = 368, TH = 160;
+  var cardComp = mkAutoComponent("Post Card / Regular", "VERTICAL", {
+    fillStyle: "Background/Surface", radius: 12, stroke: "border", w: CW,
+  });
+  cardComp.itemSpacing = 0;
+
+  var thumbRect = figma.createRectangle();
+  thumbRect.name = "Thumbnail";
+  thumbRect.resize(CW, TH);
+  applyFillStyle(thumbRect, "Thumbnail/Green", C.t1);
+  cardComp.appendChild(thumbRect);
+  thumbRect.layoutSizingHorizontal = "FILL";
+  thumbRect.layoutSizingVertical   = "FIXED";
+
+  var cardBody = mkAutoFrame(null, "Card Body", "VERTICAL", {
+    padLeft: 20, padRight: 20, padTop: 18, padBot: 20, gap: 10,
+  });
+  mkFlexText(cardBody, "CATEGORY", "accent",
+    { textStyle: "Label/Category", fillStyle: "Accent/Primary", hFill: true });
+  mkFlexText(cardBody, "포스트 제목이 여기에 들어갑니다", "text",
+    { textStyle: "Heading/Card", fillStyle: "Text/Primary", hFill: true });
+  mkFlexText(cardBody, "포스트 요약 내용이 여기에 표시됩니다. 두 줄 정도의 내용이 들어갑니다.", "muted",
+    { textStyle: "Body/XSmall", fillStyle: "Text/Muted", hFill: true });
+  mkFlexText(cardBody, "2026. 3. 26  ·  5분 읽기", "muted",
+    { textStyle: "Label/Meta", fillStyle: "Text/Muted", hFill: true });
+  cardComp.appendChild(cardBody);
+  cardBody.layoutSizingHorizontal = "FILL";
+
+  place(cardComp);
+  COMPONENTS.postCardRegular = cardComp;
+
+  // ── 7. Post Card / Featured ──────────────────────────
+  var FW = 756, FH = 280;
+  var featComp = mkAutoComponent("Post Card / Featured", "HORIZONTAL", {
+    fillStyle: "Background/Surface", radius: 12, stroke: "border",
+    w: FW, h: FH,
+  });
+  featComp.itemSpacing = 0;
+
+  var featThumb = figma.createRectangle();
+  featThumb.name = "Thumbnail";
+  featThumb.resize(FW / 2, FH);
+  applyFillStyle(featThumb, "Thumbnail/Green", C.t1);
+  featComp.appendChild(featThumb);
+  featThumb.layoutSizingHorizontal = "FIXED";
+  featThumb.layoutSizingVertical   = "FILL";
+
+  var featBody = mkAutoFrame(null, "Card Body", "VERTICAL", {
+    padLeft: 28, padRight: 28, padTop: 32, padBot: 32, gap: 10, centerMain: true,
+  });
+  mkFlexText(featBody, "CATEGORY", "accent",
+    { textStyle: "Label/Category", fillStyle: "Accent/Primary", hFill: true });
+  mkFlexText(featBody, "피처드 포스트 제목이 여기에 들어갑니다", "text",
+    { textStyle: "Heading/Card-Large", fillStyle: "Text/Primary", hFill: true });
+  mkFlexText(featBody, "피처드 포스트 요약 내용이 여기에 표시됩니다. 조금 더 긴 내용이 들어갑니다.", "muted",
+    { textStyle: "Body/Regular", fillStyle: "Text/Muted", hFill: true });
+  mkFlexText(featBody, "2026. 3. 26  ·  5분 읽기", "muted",
+    { textStyle: "Label/Meta", fillStyle: "Text/Muted", hFill: true });
+  featComp.appendChild(featBody);
+  featBody.layoutSizingHorizontal = "FILL";
+  featBody.layoutSizingVertical   = "FILL";
+
+  place(featComp);
+  COMPONENTS.postCardFeatured = featComp;
+
+  // ── 8. Nav Link / Active ──────────────────────────────
+  var navActive = mkAutoComponent("Nav Link / Active", "HORIZONTAL", {
+    fillStyle: "Accent/Primary", radius: 20,
+    padLeft: 14, padRight: 14, padTop: 6, padBot: 6,
+    centerMain: true, centerCross: true,
+  });
+  mkFlexText(navActive, "링크", "white", { textStyle: "Label/Nav-Active", fillStyle: "Accent/White" });
+  place(navActive);
+  COMPONENTS.navLinkActive = navActive;
+
+  // ── 9. Nav Link / Default ─────────────────────────────
+  var navDefault = mkAutoComponent("Nav Link / Default", "HORIZONTAL", {
+    radius: 20,
+    padLeft: 14, padRight: 14, padTop: 6, padBot: 6,
+    centerMain: true, centerCross: true,
+  });
+  mkFlexText(navDefault, "링크", "muted", { textStyle: "Label/Nav", fillStyle: "Text/Muted" });
+  place(navDefault);
+  COMPONENTS.navLinkDefault = navDefault;
+
+  // ── 10. Sidebar Widget ────────────────────────────────
+  var sbComp = mkAutoComponent("Sidebar Widget", "VERTICAL", {
+    fillStyle: "Background/Surface", radius: 12, stroke: "border",
+    w: 300, pad: 22, gap: 16,
+  });
+  mkFlexText(sbComp, "위젯 제목", "text",
+    { textStyle: "Heading/Widget", fillStyle: "Text/Primary", hFill: true });
+  var sbSlot = mkAutoFrame(null, "Content", "VERTICAL", { gap: 0 });
+  sbComp.appendChild(sbSlot);
+  sbSlot.layoutSizingHorizontal = "FILL";
+  sbSlot.layoutSizingVertical   = "HUG";
+  place(sbComp);
+  COMPONENTS.sidebarWidget = sbComp;
+
+  } finally {
+    figma.currentPage = savedPage;
+  }
+}
+
+// 인스턴스 텍스트 오버라이드 헬퍼
+function setInstanceText(instance, nodeName, value) {
+  var node = instance.findOne(function(n) { return n.type === "TEXT" && n.parent && n.parent.name === nodeName || n.name === nodeName; });
+  if (node && node.type === "TEXT") {
+    try { node.characters = value; } catch(_) {}
+  }
+}
+
+// ─────────────────────────────────────────────
 // PC — Bottom-Up Build
 // ─────────────────────────────────────────────
 
-function buildPC() {
+function buildPC(page) {
   var W = 1440, PAD = 170;
   // content width = 1440 - 170*2 = 1100
   // sidebar = 300, gap = 44  →  posts column = 1100 - 44 - 300 = 756
   var SB_W = 300, COL_GAP = 44;
   var POSTS_W = W - PAD * 2 - COL_GAP - SB_W; // 756
 
-  // ── Step 1-2: Card Body ───────────────────────────────────
-  // leaf: text nodes inside Card Body
-  // Card Body: VERTICAL AL, padding, gap:10
-  //
-  function makeCardBody(p, isFeatured) {
-    var body = mkAutoFrame(null, "Card Body", "VERTICAL", {
-      padLeft:  isFeatured ? 28 : 20,
-      padRight: isFeatured ? 28 : 20,
-      padTop:   isFeatured ? 32 : 18,
-      padBot:   isFeatured ? 32 : 20,
-      gap: 10,
-      centerMain: isFeatured ? true : false,
-    });
+  // ── Step 3-4: Post Cards (컴포넌트 인스턴스) ──────────────────
 
-    mkFlexText(body, p.cat.toUpperCase(), "accent",
-      { textStyle: "Label/Category",  fillStyle: "Accent/Primary",  hFill: true });
-    mkFlexText(body, p.title, "text",
-      { textStyle: isFeatured ? "Heading/Card-Large" : "Heading/Card",
-        fillStyle: "Text/Primary", hFill: true });
-    mkFlexText(body, p.excerpt, "muted",
-      { textStyle: isFeatured ? "Body/Regular" : "Body/XSmall",
-        fillStyle: "Text/Muted", hFill: true });
-    mkFlexText(body, p.date + "  \u00b7  " + p.rt + " \uc77d\uae30", "muted",
-      { textStyle: "Label/Meta", fillStyle: "Text/Muted", hFill: true });
-
-    return body;
+  function overrideCardTexts(inst, p) {
+    var texts = inst.findAll(function(n) { return n.type === "TEXT"; });
+    if (texts[0]) try { texts[0].characters = p.cat.toUpperCase(); } catch(_) {}
+    if (texts[1]) try { texts[1].characters = p.title; } catch(_) {}
+    if (texts[2]) try { texts[2].characters = p.excerpt; } catch(_) {}
+    if (texts[3]) try { texts[3].characters = p.date + "  \u00b7  " + p.rt + " \uc77d\uae30"; } catch(_) {}
   }
 
-  // ── Step 3-4: Post Cards ──────────────────────────────────
-  // Thumbnail (rect) → Card Body → Post Card frame
-
   function makeFeaturedCard(p) {
-    // Featured: HORIZONTAL [thumb | body], fixed 756x280
-    var H = 280;
-    var card = mkAutoFrame(null, "Post \u2014 Featured", "HORIZONTAL", {
-      fillStyle: "Background/Surface", radius: 12, stroke: "border",
-      w: POSTS_W, h: H,
-    });
-    card.itemSpacing = 0;
-
-    var thumb = figma.createRectangle();
-    thumb.resize(POSTS_W / 2, H);
-    applyFillStyle(thumb, "Thumbnail/Green", C.t1);
-    card.appendChild(thumb);
-    thumb.layoutSizingHorizontal = "FIXED";
-    thumb.layoutSizingVertical   = "FILL";
-
-    var body = makeCardBody(p, true);
-    card.appendChild(body);
-    body.layoutSizingHorizontal = "FILL";
-    body.layoutSizingVertical   = "FILL";
-
-    return card;
+    var inst = COMPONENTS.postCardFeatured.createInstance();
+    inst.name = "Post \u2014 Featured";
+    var thumb = inst.findOne(function(n) { return n.name === "Thumbnail"; });
+    if (thumb) applyFillStyle(thumb, "Thumbnail/Green", C.t1);
+    overrideCardTexts(inst, p);
+    return inst;
   }
 
   function makePostCard(p, idx) {
-    // Regular: VERTICAL [thumb / body], fixed width, AUTO height
-    var TH = 160;
-    var CW = (POSTS_W - 20) / 2; // 368 — initial size, overridden by FILL in row
-    var card = mkAutoFrame(null, "Post \u2014 " + p.title.slice(0, 20), "VERTICAL", {
-      fillStyle: "Background/Surface", radius: 12, stroke: "border",
-      w: CW,
-    });
-    card.itemSpacing = 0;
-
-    var thumb = figma.createRectangle();
-    thumb.resize(CW, TH);
-    applyFillStyle(thumb, "Thumbnail/" + THUMB_NAMES[idx], C[p.tc]);
-    card.appendChild(thumb);
-    thumb.layoutSizingHorizontal = "FILL";
-    thumb.layoutSizingVertical   = "FIXED";
-
-    var body = makeCardBody(p, false);
-    card.appendChild(body);
-    body.layoutSizingHorizontal = "FILL";
-    body.layoutSizingVertical   = "HUG";
-
-    return card;
+    var inst = COMPONENTS.postCardRegular.createInstance();
+    inst.name = "Post \u2014 " + p.title.slice(0, 20);
+    var thumb = inst.findOne(function(n) { return n.name === "Thumbnail"; });
+    if (thumb) applyFillStyle(thumb, "Thumbnail/" + THUMB_NAMES[idx], C[p.tc]);
+    overrideCardTexts(inst, p);
+    return inst;
   }
 
   // ── Step 5-6: Posts Grid ──────────────────────────────────
@@ -495,15 +715,13 @@ function buildPC() {
 
   var filterRow = mkAutoFrame(null, "Filter Tabs", "HORIZONTAL", { gap: 6 });
   ["전체", "디자인", "기술", "에세이"].forEach(function(label, i) {
-    mkPillButton(filterRow, label,
-      i === 0 ? "accent" : "surface",
-      i === 0 ? "white"  : "muted", {
-        fillStyle:     i === 0 ? "Accent/Primary"    : "Background/Surface",
-        textStyle:     i === 0 ? "Label/Filter-Active" : "Label/Filter",
-        textFillStyle: i === 0 ? "Accent/White"      : "Text/Muted",
-        stroke: i === 0 ? undefined : "border",
-        px: 14, py: 6,
-      });
+    var btn = i === 0
+      ? COMPONENTS.btnActive.createInstance()
+      : COMPONENTS.btnInactive.createInstance();
+    btn.name = "Filter \u2014 " + label;
+    var txt = btn.findOne(function(n) { return n.type === "TEXT"; });
+    if (txt) try { txt.characters = label; } catch(_) {}
+    filterRow.appendChild(btn);
   });
 
   var secHdr = mkAutoFrame(null, "Section Header", "HORIZONTAL", {
@@ -525,83 +743,52 @@ function buildPC() {
   postsGrid.layoutSizingHorizontal = "FILL";
 
   // ── Steps 10-14: Sidebar ──────────────────────────────────
+  // 컨텐츠를 먼저 빌드한 뒤 Sidebar Widget 인스턴스에 주입
 
-  // Categories Widget
-  var catsWidget = mkAutoFrame(null, "Categories", "VERTICAL", {
-    fillStyle: "Background/Surface", radius: 12, stroke: "border",
-    w: SB_W, pad: 22, gap: 16,  // 16px gap: title → category list
-  });
-  mkFlexText(catsWidget, "카테고리", "text",
-    { textStyle: "Heading/Widget", fillStyle: "Text/Primary", hFill: true });
-
-  // Category List: nested container so items have gap:2 independent of title gap
+  // ── Categories: content ────────────────────────────────
   var catList = mkAutoFrame(null, "Category List", "VERTICAL", { gap: 2 });
-  catsWidget.appendChild(catList);
-  catList.layoutSizingHorizontal = "FILL";
 
   [["디자인","12"],["기술","8"],["에세이","15"],["인터뷰","4"]].forEach(function(pair, i) {
-    var name = pair[0], cnt = pair[1];
-    var item = mkAutoFrame(null, "Category Item", "HORIZONTAL", {
-      padLeft: 12, padRight: 12, spaceBetween: true, centerCross: true, h: 32,
-    });
+    var catName = pair[0], cnt = pair[1];
+    var item = COMPONENTS.catItem.createInstance();
+    item.name = "Category \u2014 " + catName;
     if (i === 0) { applyFillStyle(item, "Accent/Light", C.accentLight); item.cornerRadius = 8; }
     catList.appendChild(item);
     item.layoutSizingHorizontal = "FILL";
-
-    mkFlexText(item, name, i === 0 ? "accent" : "muted",
-      { textStyle: "Body/Regular",
-        fillStyle: i === 0 ? "Accent/Primary" : "Text/Muted", hFill: true });
-
-    // Badge (number pill)
-    var badge = mkAutoFrame(null, "Badge", "HORIZONTAL", {
-      fillStyle: "Background/Primary", radius: 9,
-      padLeft: 6, padRight: 6, centerMain: true, centerCross: true,
-    });
-    item.appendChild(badge);
-    badge.layoutSizingHorizontal = "HUG";
-    mkFlexText(badge, cnt, "muted", { textStyle: "Label/Meta", fillStyle: "Text/Muted" });
+    var texts = item.findAll(function(n) { return n.type === "TEXT"; });
+    if (texts[0]) try { texts[0].characters = catName; texts[0].fillStyleId = STYLE_MAP[i === 0 ? "Accent/Primary" : "Text/Muted"].id; } catch(_) {}
+    if (texts[1]) try { texts[1].characters = cnt; } catch(_) {}
   });
 
-  // Tags Widget
+  // ── Tags: content ─────────────────────────────────────
   var tagsInner = mkAutoFrame(null, "Tags Container", "HORIZONTAL", {
     wrap: true, gap: 8, rowGap: 8,
   });
-  tagsInner.primaryAxisSizingMode = "FIXED";
-  tagsInner.counterAxisSizingMode = "AUTO";
-  tagsInner.resize(SB_W - 44, 10); // inner width = SB_W - pad*2
-
-  ["UI/UX", "JavaScript", "CSS", "타이포그래피", "철학", "생산성", "독서"].forEach(function(tag) {
-    var tagBtn = mkAutoFrame(null, tag, "HORIZONTAL", {
-      fillStyle: "Background/Primary", radius: 20, stroke: "border",
-      padLeft: 12, padRight: 12, padTop: 5, padBot: 5,
-    });
-    mkFlexText(tagBtn, tag, "muted", { textStyle: "Label/Tag", fillStyle: "Text/Muted" });
-    tagsInner.appendChild(tagBtn);
-  });
-
-  var tagsWidget = mkAutoFrame(null, "Tags", "VERTICAL", {
-    fillStyle: "Background/Surface", radius: 12, stroke: "border",
-    w: SB_W, pad: 22, gap: 16,
-  });
-  mkFlexText(tagsWidget, "태그", "text",
-    { textStyle: "Heading/Widget", fillStyle: "Text/Primary", hFill: true });
-  tagsWidget.appendChild(tagsInner);
   tagsInner.layoutSizingHorizontal = "FILL";
+  tagsInner.layoutSizingVertical   = "HUG";
 
-  // Newsletter Widget
+  ["UI/UX", "JavaScript", "CSS", "\ud0c0\uc774\ud3ec\uadf8\ub798\ud53c", "\ucca0\ud559", "\uc0dd\uc0b0\uc131", "\ub3c5\uc11c"].forEach(function(tag) {
+    var tagInst = COMPONENTS.tag.createInstance();
+    tagInst.name = "Tag \u2014 " + tag;
+    var txt = tagInst.findOne(function(n) { return n.type === "TEXT"; });
+    if (txt) try { txt.characters = tag; } catch(_) {}
+    tagsInner.appendChild(tagInst);
+  });
+
+  // ── Newsletter: content ────────────────────────────────
   var emailInput = mkAutoFrame(null, "Email Input", "HORIZONTAL", {
     fillStyle: "Background/Primary", radius: 8, stroke: "border",
     padLeft: 14, padRight: 14, centerCross: true, h: 38,
   });
-  mkFlexText(emailInput, "이메일 주소", "border",
+  mkFlexText(emailInput, "\uc774\uba54\uc77c \uc8fc\uc18c", "border",
     { textStyle: "Body/Small", fillStyle: "Border/Default" });
 
-  var subBtn = mkAutoFrame(null, "구독", "HORIZONTAL", {
+  var subBtn = mkAutoFrame(null, "\uad6c\ub3c5", "HORIZONTAL", {
     fillStyle: "Accent/Primary", radius: 8,
     padLeft: 14, padRight: 14, padTop: 9, padBot: 9,
     centerMain: true, centerCross: true,
   });
-  mkFlexText(subBtn, "구독", "white",
+  mkFlexText(subBtn, "\uad6c\ub3c5", "white",
     { textStyle: "Label/Button", fillStyle: "Accent/White" });
 
   var nlForm = mkAutoFrame(null, "Newsletter Form", "VERTICAL", { gap: 8 });
@@ -610,18 +797,38 @@ function buildPC() {
   nlForm.appendChild(subBtn);
   subBtn.layoutSizingHorizontal = "FILL";
 
-  var nlWidget = mkAutoFrame(null, "Newsletter", "VERTICAL", {
-    fillStyle: "Background/Surface", radius: 12, stroke: "border",
-    w: SB_W, pad: 22, gap: 12,
-  });
-  mkFlexText(nlWidget, "뉴스레터", "text",
-    { textStyle: "Heading/Widget", fillStyle: "Text/Primary", hFill: true });
-  mkFlexText(nlWidget, "새 글이 올라오면 이메일로 알려드려요.", "muted",
-    { textStyle: "Body/Small", fillStyle: "Text/Muted", hFill: true });
-  nlWidget.appendChild(nlForm);
-  nlForm.layoutSizingHorizontal = "FILL";
+  // ── Categories Widget instance ─────────────────────────
+  var catsWidget = COMPONENTS.sidebarWidget.createInstance();
+  catsWidget.name = "Categories";
+  var catTitle = catsWidget.findOne(function(n) { return n.type === "TEXT"; });
+  if (catTitle) try { catTitle.characters = "\uce74\ud14c\uace0\ub9ac"; } catch(_) {}
+  var catSlot = catsWidget.findOne(function(n) { return n.name === "Content"; });
+  if (catSlot) { catSlot.appendChild(catList); catList.layoutSizingHorizontal = "FILL"; }
 
-  // Sidebar: 3 widgets stacked vertically
+  // ── Tags Widget instance ───────────────────────────────
+  var tagsWidget = COMPONENTS.sidebarWidget.createInstance();
+  tagsWidget.name = "Tags";
+  var tagTitle = tagsWidget.findOne(function(n) { return n.type === "TEXT"; });
+  if (tagTitle) try { tagTitle.characters = "\ud0dc\uadf8"; } catch(_) {}
+  var tagSlot = tagsWidget.findOne(function(n) { return n.name === "Content"; });
+  if (tagSlot) { tagSlot.appendChild(tagsInner); tagsInner.layoutSizingHorizontal = "FILL"; }
+
+  // ── Newsletter Widget instance ─────────────────────────
+  var nlWidget = COMPONENTS.sidebarWidget.createInstance();
+  nlWidget.name = "Newsletter";
+  nlWidget.itemSpacing = 12;
+  var nlTitle = nlWidget.findOne(function(n) { return n.type === "TEXT"; });
+  if (nlTitle) try { nlTitle.characters = "\ub274\uc2a4\ub808\ud130"; } catch(_) {}
+  var nlSlot = nlWidget.findOne(function(n) { return n.name === "Content"; });
+  if (nlSlot) {
+    nlSlot.itemSpacing = 12;
+    mkFlexText(nlSlot, "\uc0c8 \uae00\uc774 \uc62c\ub77c\uc624\uba74 \uc774\uba54\uc77c\ub85c \uc54c\ub824\ub4dc\ub824\uc694.", "muted",
+      { textStyle: "Body/Small", fillStyle: "Text/Muted", hFill: true });
+    nlSlot.appendChild(nlForm);
+    nlForm.layoutSizingHorizontal = "FILL";
+  }
+
+  // ── Sidebar: 3 widget instances stacked ───────────────
   var sidebar = mkAutoFrame(null, "Sidebar", "VERTICAL", {
     w: SB_W, gap: 28,
   });
@@ -659,15 +866,14 @@ function buildPC() {
     { textStyle: "Heading/Logo", fillStyle: "Accent/Primary" });
 
   var navRow = mkAutoFrame(null, "Nav", "HORIZONTAL", { gap: 4 });
-  ["홈", "카테고리", "소개"].forEach(function(label, i) {
-    mkPillButton(navRow, label,
-      i === 0 ? "accent" : null,
-      i === 0 ? "white" : "muted", {
-        fillStyle:     i === 0 ? "Accent/Primary" : undefined,
-        textStyle:     i === 0 ? "Label/Nav-Active" : "Label/Nav",
-        textFillStyle: i === 0 ? "Accent/White" : "Text/Muted",
-        px: 14, py: 6,
-      });
+  ["\ud648", "\uce74\ud14c\uace0\ub9ac", "\uc18c\uac1c"].forEach(function(label, i) {
+    var navInst = i === 0
+      ? COMPONENTS.navLinkActive.createInstance()
+      : COMPONENTS.navLinkDefault.createInstance();
+    navInst.name = "Nav \u2014 " + label;
+    var txt = navInst.findOne(function(n) { return n.type === "TEXT"; });
+    if (txt) try { txt.characters = label; } catch(_) {}
+    navRow.appendChild(navInst);
   });
   header.appendChild(navRow);
 
@@ -701,7 +907,7 @@ function buildPC() {
   // ── Step 19: Root Frame ───────────────────────────────────
   // All sections appended to VERTICAL root → each section FILL width
 
-  var root = mkAutoFrame(figma.currentPage, "PC \u2014 1440px", "VERTICAL", {
+  var root = mkAutoFrame(page, "PC \u2014 1440px", "VERTICAL", {
     fillStyle: "Background/Primary", w: W,
   });
   root.clipsContent = false;
@@ -725,48 +931,22 @@ function buildPC() {
 // Mobile — Bottom-Up Build
 // ─────────────────────────────────────────────
 
-function buildMobile() {
+function buildMobile(page) {
   var W = 375, PAD = 20;
 
-  // ── Card Body (same pattern as PC) ───────────────────────
-
-  function makeCardBody(p) {
-    var body = mkAutoFrame(null, "Card Body", "VERTICAL", {
-      pad: PAD, gap: 8,
-    });
-    mkFlexText(body, p.cat.toUpperCase(), "accent",
-      { textStyle: "Label/Category", fillStyle: "Accent/Primary", hFill: true });
-    mkFlexText(body, p.title, "text",
-      { textStyle: "Heading/Card", fillStyle: "Text/Primary", hFill: true });
-    mkFlexText(body, p.excerpt, "muted",
-      { textStyle: "Body/XSmall", fillStyle: "Text/Muted", hFill: true });
-    mkFlexText(body, p.date + "  \u00b7  " + p.rt + " \uc77d\uae30", "muted",
-      { textStyle: "Label/Meta", fillStyle: "Text/Muted", hFill: true });
-    return body;
-  }
+  // ── Post Cards (컴포넌트 인스턴스) ───────────────────────────
 
   function makePostCard(p, idx) {
-    var TH = 160;
-    var CW = W - PAD * 2;
-    var card = mkAutoFrame(null, "Post \u2014 " + p.title.slice(0, 20), "VERTICAL", {
-      fillStyle: "Background/Surface", radius: 12, stroke: "border",
-      w: CW,
-    });
-    card.itemSpacing = 0;
-
-    var thumb = figma.createRectangle();
-    thumb.resize(CW, TH);
-    applyFillStyle(thumb, "Thumbnail/" + THUMB_NAMES[idx], C[p.tc]);
-    card.appendChild(thumb);
-    thumb.layoutSizingHorizontal = "FILL";
-    thumb.layoutSizingVertical   = "FIXED";
-
-    var body = makeCardBody(p);
-    card.appendChild(body);
-    body.layoutSizingHorizontal = "FILL";
-    body.layoutSizingVertical   = "HUG";
-
-    return card;
+    var inst = COMPONENTS.postCardRegular.createInstance();
+    inst.name = "Post \u2014 " + p.title.slice(0, 20);
+    var thumb = inst.findOne(function(n) { return n.name === "Thumbnail"; });
+    if (thumb) applyFillStyle(thumb, "Thumbnail/" + THUMB_NAMES[idx], C[p.tc]);
+    var texts = inst.findAll(function(n) { return n.type === "TEXT"; });
+    if (texts[0]) try { texts[0].characters = p.cat.toUpperCase(); } catch(_) {}
+    if (texts[1]) try { texts[1].characters = p.title; } catch(_) {}
+    if (texts[2]) try { texts[2].characters = p.excerpt; } catch(_) {}
+    if (texts[3]) try { texts[3].characters = p.date + "  \u00b7  " + p.rt + " \uc77d\uae30"; } catch(_) {}
+    return inst;
   }
 
   // ── Posts List ────────────────────────────────────────────
@@ -785,15 +965,13 @@ function buildMobile() {
 
   var filterRow = mkAutoFrame(null, "Filter Tabs", "HORIZONTAL", { gap: 8 });
   ["전체", "디자인", "기술", "에세이"].forEach(function(label, i) {
-    mkPillButton(filterRow, label,
-      i === 0 ? "accent" : "surface",
-      i === 0 ? "white"  : "muted", {
-        fillStyle:     i === 0 ? "Accent/Primary"    : "Background/Surface",
-        textStyle:     i === 0 ? "Label/Filter-Active" : "Label/Filter",
-        textFillStyle: i === 0 ? "Accent/White"      : "Text/Muted",
-        stroke: i === 0 ? undefined : "border",
-        px: 14, py: 6,
-      });
+    var btn = i === 0
+      ? COMPONENTS.btnActive.createInstance()
+      : COMPONENTS.btnInactive.createInstance();
+    btn.name = "Filter \u2014 " + label;
+    var txt = btn.findOne(function(n) { return n.type === "TEXT"; });
+    if (txt) try { txt.characters = label; } catch(_) {}
+    filterRow.appendChild(btn);
   });
 
   // ── Posts Section ─────────────────────────────────────────
@@ -866,7 +1044,7 @@ function buildMobile() {
 
   // ── Root Frame ────────────────────────────────────────────
 
-  var root = mkAutoFrame(figma.currentPage, "Mobile \u2014 375px", "VERTICAL", {
+  var root = mkAutoFrame(page, "Mobile \u2014 375px", "VERTICAL", {
     fillStyle: "Background/Primary", w: W,
   });
   root.clipsContent = false;
@@ -955,16 +1133,23 @@ function applyStylesToNode(node) {
       await yield_();
 
       await registerAllStyles();
-      getOrMakePage("V" + PLUGIN_VERSION);
+      progress("컴포넌트를 생성하고 있습니다...");
+      await yield_();
+      try { buildAllComponents(); }
+      catch (e) { figma.closePlugin("[Components] 빌드 오류: " + e.message); return; }
+      progress("컴포넌트 10개 생성 완료.");
+      await yield_();
+
+      var designPage = getOrMakePage("V" + PLUGIN_VERSION);
 
       var pc;
-      try { pc = buildPC(); }
+      try { pc = buildPC(designPage); }
       catch (e) { figma.closePlugin("[PC] 빌드 오류: " + e.message); return; }
       progress("PC 1440px 프레임 생성 완료.");
       await yield_();
 
       var mb;
-      try { mb = buildMobile(); }
+      try { mb = buildMobile(designPage); }
       catch (e) { figma.closePlugin("[Mobile] 빌드 오류: " + e.message); return; }
       progress("Mobile 375px 프레임 생성 완료.");
       await yield_();
@@ -986,9 +1171,10 @@ function applyStylesToNode(node) {
       await yield_();
 
       if (_notifyHandle) { try { _notifyHandle.cancel(); } catch (_) {} }
+      figma.currentPage = designPage;
       figma.viewport.scrollAndZoomIntoView([pc, mb]);
       figma.closePlugin(
-        "완료! 스타일 " + totalStyles + "개 + Auto Layout 전면 적용 완료 (PC / Mobile)"
+        "완료! 컴포넌트 10개 + 스타일 " + totalStyles + "개 + Auto Layout 적용 완료 (PC / Mobile)"
       );
 
     } else {

@@ -221,7 +221,7 @@ try { ... createGridStyle ... } catch(e) { console.warn(e.message); }
 
 ---
 
-### V2.2 — 예정
+### V2.2 — 2026-03-27
 
 #### 디자이너 페인포인트
 > "Post Card, Button, Badge가 반복되는데 컴포넌트가 아니어서
@@ -229,15 +229,150 @@ try { ... createGridStyle ... } catch(e) { console.warn(e.message); }
 > Assets 패널이 텅 비어 있어서 디자인 시스템처럼 쓸 수 없다."
 
 #### 목표
-반복 요소를 `figma.createComponent()`로 자동 변환 → Assets 패널 등록 및 재사용 가능 상태.
+반복 요소를 `figma.createComponent()`로 자동 변환 → Assets 패널 등록 및 인스턴스로 재사용.
 
-#### 컴포넌트화 대상
-- Post Card (Featured / Regular)
-- Pill Button (활성 / 비활성)
-- Badge (숫자 pill)
-- Category Item (활성 / 비활성)
-- Tag Button
-- Newsletter Form
+---
+
+#### 핵심 설계 결정 — 컴포넌트 범위
+
+> "모든 레이어를 컴포넌트로 만들어야 하나?"
+
+컴포넌트화 기준을 세 가지로 정의:
+1. **반복 사용** — 같은 구조가 2회 이상 등장
+2. **상태 변화** — active / inactive / hover 등 variant가 필요
+3. **독립 구현 단위** — 개발자가 별도 컴포넌트로 구현해야 하는 UI 단위
+
+이 기준으로 10개 선정. Header, Hero, Footer는 1회 사용 섹션이므로 제외.
+
+---
+
+#### 1차 시도 — ComponentNode 중첩 오류 ❌
+
+**증상**: `Post Card / Regular` 빌드 시 "Cannot move node. Reparenting would create a component inside a component" 오류
+
+**원인**
+```javascript
+// 잘못된 방식 — Component 안에 Component 불가
+var cardBody = mkAutoComponent("Card Body", ...); // ← ComponentNode
+cardComp.appendChild(cardBody);                   // ← 오류 발생
+```
+
+**Figma 규칙 확인**
+```
+ComponentNode의 직접 자식 = FrameNode | InstanceNode | RectangleNode | TextNode
+ComponentNode 안에 ComponentNode = 불가
+```
+
+**수정**
+```javascript
+// Card Body는 FrameNode로 생성 (mkAutoFrame, parent=null)
+var cardBody = mkAutoFrame(null, "Card Body", "VERTICAL", { ... });
+cardComp.appendChild(cardBody); // ✅ FrameNode는 가능
+```
+
+---
+
+#### 2차 시도 — 컴포넌트 노드가 잘못된 페이지에 누수 ❌
+
+**증상**: 컴포넌트 5개까지 생성 후 멈춤. Post Card 2개가 🧩 Components가 아닌 Page 3에 생성됨.
+
+**원인**
+```javascript
+function buildAllComponents() {
+  var savedPage = figma.currentPage;
+  figma.currentPage = compPage;
+  try {
+    // ... 컴포넌트 빌드 ...
+    figma.currentPage = savedPage; // ← try 본문 안에 있어서
+                                   //    오류 발생 시 실행되지 않음
+  }
+  // finally 없음 → 에러 시 currentPage 복원 안 됨
+}
+```
+
+**수정**
+```javascript
+try {
+  // ... 컴포넌트 빌드 ...
+} finally {
+  figma.currentPage = savedPage; // ← 에러 여부와 무관하게 항상 실행
+}
+```
+
+---
+
+#### 3차 시도 — PC/Mobile 프레임이 🧩 Components 페이지에 생성 ❌
+
+**증상**: V2.2 페이지가 비어있고, PC·Mobile 프레임이 🧩 Components 페이지에 배치됨.
+
+**원인**
+```javascript
+// buildPC/buildMobile 내부
+var root = mkAutoFrame(figma.currentPage, "PC — 1440px", ...);
+//                     ↑ buildAllComponents()의 finally가 복원한
+//                       savedPage = 초기 페이지 (🧩 Components가 됨)
+//                       getOrMakePage("V2.2")가 설정한 V2.2 페이지가 아님
+```
+
+**수정**: `figma.currentPage`에 의존하지 않고 페이지를 명시적 인자로 전달
+
+```javascript
+var designPage = getOrMakePage("V" + PLUGIN_VERSION);
+buildPC(designPage);
+buildMobile(designPage);
+
+function buildPC(page) {
+  var root = mkAutoFrame(page, "PC — 1440px", ...); // ← 명시적 page 사용
+}
+```
+
+---
+
+#### 컴포넌트 커버리지 확정 — 10개
+
+처음 7개에서 "핸드오프에 필수적인가?" 검토 후 3개 추가.
+
+| # | 컴포넌트 | 추가 이유 |
+|---|---|---|
+| 1 | Tag / Default | Tags widget에 7회 반복 |
+| 2 | Badge / Count | Category Item 내부 재사용 |
+| 3 | Button / Pill — Active | Filter Tabs active 상태 |
+| 4 | Button / Pill — Inactive | Filter Tabs inactive 상태 |
+| 5 | Category / Item | Sidebar 4회 반복 |
+| 6 | Post Card / Regular | Posts Grid 5회 반복 |
+| 7 | Post Card / Featured | Featured 영역 핵심 컴포넌트 |
+| 8 | Nav Link / Active | Header nav — 상태 포함, 개발자 router active class 참조 |
+| 9 | Nav Link / Default | Header nav — 기본 상태 |
+| 10 | Sidebar Widget | 동일 outer shell이 3회 (Categories, Tags, Newsletter) |
+
+**Sidebar Widget 구현 방식**
+```
+Sidebar Widget (Component)
+  └── 위젯 제목 (TEXT, overridable)
+  └── Content (FRAME, slot — appendChild로 내용 주입)
+
+// 인스턴스 생성 후 Content slot에 content 주입
+var inst = COMPONENTS.sidebarWidget.createInstance();
+var slot = inst.findOne(n => n.name === "Content");
+slot.appendChild(catList); // ← Figma API에서 instance 내 FrameNode에 appendChild 가능
+```
+
+---
+
+#### 최종 결과
+
+| 항목 | V2.1 | V2.2 |
+|---|---|---|
+| Design Token | ✅ 37개 | ✅ 동일 |
+| Auto Layout | ✅ 14개 존 | ✅ 동일 |
+| 컴포넌트 | ❌ 없음 | ✅ 10개 |
+| Assets 패널 등록 | ❌ | ✅ |
+| 인스턴스 사용 | ❌ | ✅ (모든 반복 요소) |
+| 개발자 핸드오프 품질 | 스타일·AL 완전 | 스타일·AL·컴포넌트 완전 |
+
+#### 남은 것 → V2.3으로 이어질 이유
+- 컴포넌트가 단일 상태만 있음 (active/inactive는 별도 컴포넌트, Variants 아님)
+- Variants로 묶으면 프로토타이핑에서 상태 전환 가능
 
 ---
 
