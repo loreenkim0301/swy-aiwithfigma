@@ -1,4 +1,4 @@
-# DEVLOG — AI × Figma 디자이너 워크플로우 자동화
+# DEVLOG — figma-aiwithfigma
 
 > 디자이너와 기획자의 페인포인트를 중심으로,
 > 버전별 목표 · 시도 · 성공/실패 · 다음 단계를 기록합니다.

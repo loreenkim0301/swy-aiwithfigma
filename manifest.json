@@ -1,6 +1,6 @@
 {
-  "name": "Blog Prototype Generator",
-  "id": "blog-prototype-generator",
+  "name": "figma-aiwithfigma",
+  "id": "figma-aiwithfigma",
   "api": "1.0.0",
   "main": "src/code.js",
   "editorType": ["figma"]
